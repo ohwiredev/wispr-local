@@ -9,6 +9,7 @@ from starlette.responses import StreamingResponse
 import uvicorn
 
 from .controller_service import WisprLocalService
+from .gpu_pack import get_capabilities, install_gpu_pack
 from .settings_util import WHISPER_MODEL_IDS
 
 app = FastAPI()
@@ -51,6 +52,7 @@ async def status():
         "model_loading_step": service.transcriber.load_step,
         "model_download_current": service.transcriber.download_current,
         "model_download_total": service.transcriber.download_total,
+        "cuda_available": service.cuda_available,
     }
 
 
@@ -87,6 +89,17 @@ async def events(request: Request):
 @app.get("/settings")
 async def get_settings():
     return service.settings
+
+
+@app.get("/system/capabilities")
+async def system_capabilities():
+    return get_capabilities()
+
+
+@app.post("/system/gpu-pack/install")
+async def system_gpu_pack_install():
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, install_gpu_pack)
 
 
 @app.get("/transcription/models")

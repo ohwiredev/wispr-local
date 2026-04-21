@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from .settings_util import merge_settings
+from .settings_util import cuda_available, merge_settings
 
 
 class SettingsManager:
@@ -25,6 +25,8 @@ class SettingsManager:
     def load(self) -> Dict[str, Any]:
         """Load saved settings and fill missing sections from defaults."""
         defaults = copy.deepcopy(self.defaults)
+        defaults["transcription"] = dict(defaults["transcription"])
+        defaults["transcription"]["device"] = "cuda" if cuda_available() else "cpu"
         if not self.path.exists():
             return defaults
         try:

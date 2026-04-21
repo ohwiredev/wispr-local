@@ -722,6 +722,12 @@ html.indicator-window #root {
   background: var(--accent-light);
 }
 
+.dropdown__item--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .dropdown__check {
   width: 14px;
   height: 14px;
@@ -739,6 +745,64 @@ html.indicator-window #root {
   margin: 8px 0 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.settings-gpu-pack {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-color);
+}
+
+.settings-gpu-pack__lead {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.settings-gpu-pack__hint {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.settings-gpu-pack__warn {
+  margin: 0 0 10px 0;
+  font-size: 12px;
+  color: #b45309;
+  line-height: 1.4;
+}
+
+.settings-gpu-pack__btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--accent-light);
+  color: var(--accent-color);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.settings-gpu-pack__btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.settings-gpu-pack__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.settings-gpu-pack__success {
+  margin: 10px 0 0 0;
+  font-size: 13px;
+  color: #15803d;
+  line-height: 1.4;
 }
 
 .settings-save-btn {

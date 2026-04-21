@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { wisprApiPortLabel } from "../apiConfig";
-import { useWispr } from "../hooks/useWispr";
+import { useWispr, type WisprCapabilities, type WisprSettings } from "../hooks/useWispr";
 import { useWeeklyWords } from "../hooks/useWeeklyWords";
 
 type Page = "home" | "history" | "settings";
@@ -37,6 +37,16 @@ const HOTKEY_LABEL_MAP = Object.fromEntries(HOTKEY_OPTIONS.map((o) => [o.value, 
 function formatHotkeyLabel(holdKey: string | undefined): string {
     if (!holdKey) return "Right Ctrl";
     return HOTKEY_LABEL_MAP[holdKey] ?? holdKey.replace(/_/g, " ");
+}
+
+const COMPUTE_DEVICE_LABELS = ["CPU", "GPU (CUDA)"] as const;
+
+function computeLabelFromDevice(device: string | undefined): string {
+    return device === "cuda" ? "GPU (CUDA)" : "CPU";
+}
+
+function deviceFromComputeLabel(label: string): "cpu" | "cuda" {
+    return label === "GPU (CUDA)" ? "cuda" : "cpu";
 }
 
 /* ── SVG icons (inline, small) ── */
@@ -389,11 +399,13 @@ function Dropdown({
     options,
     disabled,
     onChange,
+    isOptionDisabled,
 }: {
     value: string;
     options: string[];
     disabled?: boolean;
     onChange: (v: string) => void;
+    isOptionDisabled?: (option: string) => boolean;
 }) {
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
@@ -435,8 +447,13 @@ function Dropdown({
                             key={opt}
                             role="option"
                             aria-selected={opt === value}
-                            className={`dropdown__item ${opt === value ? "dropdown__item--selected" : ""}`}
-                            onClick={() => { onChange(opt); close(); }}
+                            aria-disabled={isOptionDisabled?.(opt) ?? false}
+                            className={`dropdown__item ${opt === value ? "dropdown__item--selected" : ""} ${isOptionDisabled?.(opt) ? "dropdown__item--disabled" : ""}`}
+                            onClick={() => {
+                                if (isOptionDisabled?.(opt)) return;
+                                onChange(opt);
+                                close();
+                            }}
                         >
                             {opt}
                             {opt === value && (
@@ -461,10 +478,16 @@ function SettingsView({
     settingsError,
     currentModel,
     modelOptionsList,
-    setTranscriptionModel,
     currentHotkey,
-    setHotkey,
     modelLoading,
+    cudaAvailable,
+    capabilities,
+    currentDevice,
+    saveSettingsPatch,
+    gpuPackInstalling,
+    gpuPackMessage,
+    gpuPackError,
+    installGpuPack,
 }: {
     settings: ReturnType<typeof useWispr>["settings"];
     apiOk: boolean;
@@ -472,20 +495,29 @@ function SettingsView({
     settingsError: string | null;
     currentModel: string;
     modelOptionsList: string[];
-    setTranscriptionModel: (m: string) => Promise<void>;
     currentHotkey: string;
-    setHotkey: (h: string) => Promise<void>;
     modelLoading: boolean;
+    cudaAvailable: boolean;
+    capabilities: WisprCapabilities | null;
+    currentDevice: "cpu" | "cuda";
+    saveSettingsPatch: (patch: Partial<WisprSettings>) => Promise<boolean>;
+    gpuPackInstalling: boolean;
+    gpuPackMessage: string | null;
+    gpuPackError: string | null;
+    installGpuPack: () => Promise<boolean>;
 }) {
     const [draftHotkey, setDraftHotkey] = useState(currentHotkey);
     const [draftModel, setDraftModel] = useState(currentModel);
+    const [draftDevice, setDraftDevice] = useState<"cpu" | "cuda">(currentDevice);
     const [saved, setSaved] = useState(false);
 
     useEffect(() => { setDraftHotkey(currentHotkey); }, [currentHotkey]);
     useEffect(() => { setDraftModel(currentModel); }, [currentModel]);
+    useEffect(() => { setDraftDevice(currentDevice); }, [currentDevice]);
 
-    const isDirty = draftHotkey !== currentHotkey || draftModel !== currentModel;
-    const busy = settingsSaving || modelLoading;
+    const isDirty =
+        draftHotkey !== currentHotkey || draftModel !== currentModel || draftDevice !== currentDevice;
+    const busy = settingsSaving || modelLoading || gpuPackInstalling;
 
     const hotkeyLabels = HOTKEY_OPTIONS.map((o) => o.label);
     const draftHotkeyLabel = formatHotkeyLabel(draftHotkey);
@@ -496,8 +528,22 @@ function SettingsView({
     };
 
     const handleSave = async () => {
-        if (draftHotkey !== currentHotkey) await setHotkey(draftHotkey);
-        if (draftModel !== currentModel) await setTranscriptionModel(draftModel);
+        if (!settings) return;
+        const patch: Partial<WisprSettings> = {};
+        if (draftHotkey !== currentHotkey) {
+            patch.hotkey = { hold_key: draftHotkey };
+        }
+        if (draftModel !== currentModel || draftDevice !== currentDevice) {
+            patch.transcription = {
+                ...settings.transcription,
+                ...(draftModel !== currentModel ? { model: draftModel } : {}),
+                ...(draftDevice !== currentDevice ? { device: draftDevice } : {}),
+            };
+        }
+        if (Object.keys(patch).length > 0) {
+            const ok = await saveSettingsPatch(patch);
+            if (!ok) return;
+        }
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
     };
@@ -533,6 +579,55 @@ function SettingsView({
                             onChange={setDraftModel}
                         />
                     </div>
+                    <div className="setting-row">
+                        <div className="setting-row__label-group">
+                            <label>Compute</label>
+                            {!cudaAvailable && capabilities?.gpu_pack_install_configured && (
+                                <span className="setting-row__speed-badge">GPU libraries optional</span>
+                            )}
+                            {!cudaAvailable && !capabilities?.gpu_pack_install_configured && (
+                                <span className="setting-row__speed-badge">No GPU detected</span>
+                            )}
+                        </div>
+                        <Dropdown
+                            value={computeLabelFromDevice(draftDevice)}
+                            options={[...COMPUTE_DEVICE_LABELS]}
+                            disabled={!apiOk || !settings || busy}
+                            isOptionDisabled={(opt) => opt === "GPU (CUDA)" && !cudaAvailable}
+                            onChange={(label) => setDraftDevice(deviceFromComputeLabel(label))}
+                        />
+                    </div>
+                    {capabilities?.gpu_pack_install_configured && !capabilities.cuda_available && (
+                        <div className="settings-gpu-pack">
+                            <p className="settings-gpu-pack__lead">
+                                This build can download GPU acceleration for faster-whisper
+                                (CUDA). An NVIDIA GPU and driver are required.
+                            </p>
+                            {capabilities.gpu_pack_user_hint && (
+                                <p className="settings-gpu-pack__hint">{capabilities.gpu_pack_user_hint}</p>
+                            )}
+                            {!capabilities.nvidia_smi_found && (
+                                <p className="settings-gpu-pack__warn" role="status">
+                                    <code>nvidia-smi</code> was not found on your PATH. If you do not
+                                    have an NVIDIA GPU, GPU acceleration will not work.
+                                </p>
+                            )}
+                            <button
+                                type="button"
+                                className="settings-gpu-pack__btn"
+                                disabled={!apiOk || gpuPackInstalling}
+                                onClick={() => void installGpuPack()}
+                            >
+                                {gpuPackInstalling ? "Installing…" : "Install GPU support"}
+                            </button>
+                            {gpuPackMessage && (
+                                <p className="settings-gpu-pack__success" role="status">{gpuPackMessage}</p>
+                            )}
+                            {gpuPackError && (
+                                <p className="settings-inline-error" role="alert">{gpuPackError}</p>
+                            )}
+                        </div>
+                    )}
                     {settingsError && (
                         <p className="settings-inline-error" role="alert">{settingsError}</p>
                     )}
@@ -564,8 +659,12 @@ const Dashboard = () => {
         transcriptionModels,
         settingsSaving,
         settingsError,
-        setTranscriptionModel,
-        setHotkey,
+        capabilities,
+        gpuPackInstalling,
+        gpuPackMessage,
+        gpuPackError,
+        saveSettingsPatch,
+        installGpuPack,
     } = useWispr();
 
     const [initialData] = useState(() => loadEntries());
@@ -597,6 +696,9 @@ const Dashboard = () => {
     }, [transcriptionModels, settings?.transcription?.model]);
 
     const currentModel = settings?.transcription?.model ?? "base";
+    const currentDevice: "cpu" | "cuda" =
+        settings?.transcription?.device === "cuda" ? "cuda" : "cpu";
+    const cudaForSettings = capabilities?.cuda_available ?? status.cuda_available;
 
     return (
         <>
@@ -633,7 +735,7 @@ const Dashboard = () => {
                     <HomeView
                         status={status}
                         currentModel={currentModel}
-                        computeDevice={settings?.transcription?.device ?? "cpu"}
+                        computeDevice={computeLabelFromDevice(settings?.transcription?.device)}
                         hotkeyLabel={formatHotkeyLabel(settings?.hotkey?.hold_key)}
                         entries={entries}
                         wordCount={wordCount}
@@ -649,10 +751,16 @@ const Dashboard = () => {
                         settingsError={settingsError}
                         currentModel={currentModel}
                         modelOptionsList={modelOptionsList}
-                        setTranscriptionModel={setTranscriptionModel}
                         currentHotkey={settings?.hotkey?.hold_key ?? "right_ctrl"}
-                        setHotkey={setHotkey}
                         modelLoading={status.model_loading}
+                        cudaAvailable={cudaForSettings}
+                        capabilities={capabilities}
+                        currentDevice={currentDevice}
+                        saveSettingsPatch={saveSettingsPatch}
+                        gpuPackInstalling={gpuPackInstalling}
+                        gpuPackMessage={gpuPackMessage}
+                        gpuPackError={gpuPackError}
+                        installGpuPack={installGpuPack}
                     />
                 )}
             </div>

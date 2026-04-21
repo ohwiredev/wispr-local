@@ -11,6 +11,13 @@ export interface WisprSettings {
     output: { method?: string };
 }
 
+export interface WisprCapabilities {
+    cuda_available: boolean;
+    nvidia_smi_found: boolean;
+    gpu_pack_install_configured: boolean;
+    gpu_pack_user_hint: string | null;
+}
+
 const ERROR_GIVE_UP_MS = 2 * 60 * 1000;
 
 interface Status {
@@ -24,6 +31,7 @@ interface Status {
     model_loading_step: string;
     model_download_current: number;
     model_download_total: number;
+    cuda_available: boolean;
 }
 
 const DEFAULT_STATUS: Status = {
@@ -37,6 +45,7 @@ const DEFAULT_STATUS: Status = {
     model_loading_step: "idle",
     model_download_current: 0,
     model_download_total: 0,
+    cuda_available: false,
 };
 
 export const useWispr = () => {
@@ -47,6 +56,10 @@ export const useWispr = () => {
     const [transcriptionModels, setTranscriptionModels] = useState<string[]>([]);
     const [settingsSaving, setSettingsSaving] = useState(false);
     const [settingsError, setSettingsError] = useState<string | null>(null);
+    const [capabilities, setCapabilities] = useState<WisprCapabilities | null>(null);
+    const [gpuPackInstalling, setGpuPackInstalling] = useState(false);
+    const [gpuPackMessage, setGpuPackMessage] = useState<string | null>(null);
+    const [gpuPackError, setGpuPackError] = useState<string | null>(null);
 
     const esRef = useRef<EventSource | null>(null);
     const firstFailureAtRef = useRef<number | null>(null);
@@ -72,7 +85,12 @@ export const useWispr = () => {
 
         es.onmessage = (e) => {
             try {
-                const data = JSON.parse(e.data) as Status;
+                const raw = JSON.parse(e.data) as Partial<Status> & { type?: string };
+                const data: Status = {
+                    ...DEFAULT_STATUS,
+                    ...raw,
+                    cuda_available: raw.cuda_available ?? false,
+                };
                 setStatus(data);
                 if (!apiOkRef.current) setApiOk(true);
                 if (gaveUpRef.current) setGaveUp(false);
@@ -124,9 +142,10 @@ export const useWispr = () => {
     const refreshConfiguration = useCallback(async () => {
         setSettingsError(null);
         try {
-            const [sRes, mRes] = await Promise.all([
+            const [sRes, mRes, cRes] = await Promise.all([
                 fetch(`${WISPR_API_URL}/settings`),
                 fetch(`${WISPR_API_URL}/transcription/models`),
+                fetch(`${WISPR_API_URL}/system/capabilities`),
             ]);
             if (sRes.ok) {
                 setSettings((await sRes.json()) as WisprSettings);
@@ -134,6 +153,9 @@ export const useWispr = () => {
             if (mRes.ok) {
                 const body = (await mRes.json()) as { models?: string[] };
                 setTranscriptionModels(body.models ?? []);
+            }
+            if (cRes.ok) {
+                setCapabilities((await cRes.json()) as WisprCapabilities);
             }
         } catch (e) {
             console.error("Failed to load settings", e);
@@ -168,7 +190,7 @@ export const useWispr = () => {
         connectSSE();
     }, [connectSSE]);
 
-    const saveSettingsPatch = async (patch: Partial<WisprSettings>) => {
+    const saveSettingsPatch = async (patch: Partial<WisprSettings>): Promise<boolean> => {
         setSettingsSaving(true);
         setSettingsError(null);
         try {
@@ -182,12 +204,14 @@ export const useWispr = () => {
                 : null;
             if (!res.ok) {
                 setSettingsError(typeof detail === "string" ? detail : "Failed to save settings");
-                return;
+                return false;
             }
             await refreshConfiguration();
+            return true;
         } catch (e) {
             console.error(e);
             setSettingsError("Failed to save settings");
+            return false;
         } finally {
             setSettingsSaving(false);
         }
@@ -207,8 +231,46 @@ export const useWispr = () => {
         });
     };
 
+    const setTranscriptionDevice = async (device: "cpu" | "cuda") => {
+        if (!settings) return;
+        await saveSettingsPatch({
+            transcription: { ...settings.transcription, device },
+        });
+    };
+
     const startRecording = () => fetch(`${WISPR_API_URL}/start`, { method: 'POST' });
     const stopRecording = () => fetch(`${WISPR_API_URL}/stop`, { method: 'POST' });
+
+    const installGpuPack = useCallback(async (): Promise<boolean> => {
+        setGpuPackInstalling(true);
+        setGpuPackError(null);
+        setGpuPackMessage(null);
+        try {
+            const res = await fetch(`${WISPR_API_URL}/system/gpu-pack/install`, {
+                method: "POST",
+            });
+            const body = (await res.json().catch(() => ({}))) as {
+                ok?: boolean;
+                error?: string;
+                message?: string;
+            };
+            if (!body.ok) {
+                setGpuPackError(typeof body.error === "string" ? body.error : "GPU install failed");
+                return false;
+            }
+            setGpuPackMessage(
+                typeof body.message === "string" ? body.message : "Installation finished.",
+            );
+            await refreshConfiguration();
+            return true;
+        } catch (e) {
+            console.error(e);
+            setGpuPackError("Could not reach the backend for GPU install");
+            return false;
+        } finally {
+            setGpuPackInstalling(false);
+        }
+    }, [refreshConfiguration]);
 
     return {
         status,
@@ -219,8 +281,15 @@ export const useWispr = () => {
         transcriptionModels,
         settingsSaving,
         settingsError,
+        capabilities,
+        gpuPackInstalling,
+        gpuPackMessage,
+        gpuPackError,
         refreshConfiguration,
+        saveSettingsPatch,
+        installGpuPack,
         setTranscriptionModel,
+        setTranscriptionDevice,
         setHotkey,
         startRecording,
         stopRecording,

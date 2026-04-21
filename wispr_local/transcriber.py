@@ -41,6 +41,7 @@ class WhisperTranscriber:
         self._lock = threading.Lock()
 
         self.load_step = "idle"
+        self.load_error: Optional[str] = None
         self.download_current = 0
         self.download_total = 0
 
@@ -48,11 +49,11 @@ class WhisperTranscriber:
 
     def _load_model(self):
         with self._lock:
+            model_name = self.settings.get("model", "base")
+            device = self.settings.get("device", "cpu")
+            compute_type = self.settings.get("compute_type", "int8")
+            self.load_error = None
             try:
-                model_name = self.settings.get("model", "base")
-                device = self.settings.get("device", "cpu")
-                compute_type = self.settings.get("compute_type", "int8")
-
                 self.load_step = "checking"
                 self.download_current = 0
                 self.download_total = 0
@@ -90,16 +91,9 @@ class WhisperTranscriber:
                 self.load_step = "ready"
             except Exception as e:
                 LOGGER.exception("Failed to load model: %s", e)
-                if device == "cuda":
-                    LOGGER.info("Falling back to CPU")
-                    self.load_step = "loading"
-                    self.model = WhisperModel(
-                        local_dir, device="cpu", compute_type="int8",
-                    )
-                    self.load_step = "ready"
-                else:
-                    self.load_step = "error"
-                    raise
+                self.model = None
+                self.load_step = "error"
+                self.load_error = str(e)
 
     def transcribe(self, audio: np.ndarray, on_segment=None) -> str:
         """Transcribe audio. If *on_segment* is provided it is called with the

@@ -9,7 +9,12 @@ from .correction_resolver import CorrectionResolver
 from .transcriber import WhisperTranscriber
 from .text_processing import TextProcessor
 from .output import TextOutputManager
-from .settings_util import merge_settings, validate_transcription_model
+from .settings_util import (
+    cuda_available,
+    merge_settings,
+    validate_transcription_device,
+    validate_transcription_model,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -67,9 +72,12 @@ class WisprLocalService:
     def __init__(self, settings_path: Path):
         self.settings_manager = SettingsManager(settings_path)
         self.settings = self.settings_manager.load()
+        self.cuda_available = cuda_available()
 
         self.recorder = AudioRecorder(self.settings["audio"])
         self.transcriber = WhisperTranscriber(self.settings["transcription"])
+        if self.transcriber.load_step == "error":
+            self.model_loading_error = self.transcriber.load_error
         self.correction_resolver = CorrectionResolver(self.settings["correction"])
         self.text_processor = TextProcessor(
             self.settings["text_processing"],
@@ -150,6 +158,7 @@ class WisprLocalService:
             "model_loading_step": self.transcriber.load_step,
             "model_download_current": self.transcriber.download_current,
             "model_download_total": self.transcriber.download_total,
+            "cuda_available": self.cuda_available,
         }
 
     def start_recording(self):
@@ -215,6 +224,7 @@ class WisprLocalService:
         merged = merge_settings(self.settings_manager.defaults, self.settings)
         merged = merge_settings(merged, patch)
         validate_transcription_model(merged)
+        validate_transcription_device(merged)
 
         old_model = self.settings.get("transcription", {}).get("model")
         new_model = merged.get("transcription", {}).get("model")
@@ -246,12 +256,20 @@ class WisprLocalService:
             ).start()
         else:
             self.transcriber.update_settings(merged["transcription"])
+            if self.transcriber.load_step == "error":
+                self.model_loading_error = self.transcriber.load_error
+            else:
+                self.model_loading_error = None
 
     def _load_model_async(self, transcription_settings: dict):
         try:
             self.transcriber.update_settings(transcription_settings)
-            self.model_loading_error = None
-            LOGGER.info("Model %s loaded successfully", self.model_loading_name)
+            if self.transcriber.load_step == "error":
+                self.model_loading_error = self.transcriber.load_error or "Failed to load model"
+                LOGGER.error("Failed to load model %s: %s", self.model_loading_name, self.model_loading_error)
+            else:
+                self.model_loading_error = None
+                LOGGER.info("Model %s loaded successfully", self.model_loading_name)
         except Exception as e:
             LOGGER.exception("Failed to load model %s", self.model_loading_name)
             self.model_loading_error = str(e)

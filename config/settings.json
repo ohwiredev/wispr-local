@@ -8,7 +8,7 @@
     },
     "transcription": {
         "model": "distil-large-v3",
-        "device": "cpu",
+        "device": "cuda",
         "compute_type": "int8"
     },
     "text_processing": {},

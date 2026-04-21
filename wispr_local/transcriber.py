@@ -1,0 +1,107 @@
+import logging
+import threading
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import tqdm
+from faster_whisper import WhisperModel
+from faster_whisper.utils import _MODELS
+from huggingface_hub import snapshot_download
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _make_progress_tqdm(transcriber: "WhisperTranscriber"):
+    """Build a tqdm subclass bound to a specific transcriber instance."""
+
+    class _ProgressTqdm(tqdm.tqdm):
+        def __init__(self, *args, **kwargs):
+            kwargs["disable"] = False
+            super().__init__(*args, **kwargs)
+            if self.total and self.total > 100_000:
+                transcriber.download_total += int(self.total)
+                transcriber.load_step = "downloading"
+
+        def update(self, n=1):
+            result = super().update(n)
+            if self.total and self.total > 100_000:
+                transcriber.download_current += int(n)
+                transcriber.load_step = "downloading"
+            return result
+
+    return _ProgressTqdm
+
+
+class WhisperTranscriber:
+    def __init__(self, settings):
+        self.settings = settings
+        self.model_path = Path("models")
+        self.model: Optional[WhisperModel] = None
+        self._lock = threading.Lock()
+
+        self.load_step = "idle"
+        self.download_current = 0
+        self.download_total = 0
+
+        self._load_model()
+
+    def _load_model(self):
+        with self._lock:
+            try:
+                model_name = self.settings.get("model", "base")
+                device = self.settings.get("device", "cpu")
+                compute_type = self.settings.get("compute_type", "int8")
+
+                self.load_step = "checking"
+                self.download_current = 0
+                self.download_total = 0
+                LOGGER.info("Loading model %s on %s (%s)", model_name, device, compute_type)
+
+                # Resolve the HF repo ID from the short model name
+                repo_id = _MODELS.get(model_name, model_name)
+
+                # Step 1: download (or verify cache) with progress reporting
+                self.load_step = "downloading"
+                progress_cls = _make_progress_tqdm(self)
+                local_dir = snapshot_download(
+                    repo_id,
+                    local_dir=str(self.model_path / model_name),
+                    tqdm_class=progress_cls,
+                )
+                LOGGER.info("Model files ready at %s", local_dir)
+
+                # Step 2: load from the local path (no network)
+                self.load_step = "loading"
+                model = WhisperModel(
+                    local_dir,
+                    device=device,
+                    compute_type=compute_type,
+                )
+
+                self.model = model
+                self.load_step = "ready"
+            except Exception as e:
+                LOGGER.exception("Failed to load model: %s", e)
+                if device == "cuda":
+                    LOGGER.info("Falling back to CPU")
+                    self.load_step = "loading"
+                    self.model = WhisperModel(
+                        local_dir, device="cpu", compute_type="int8",
+                    )
+                    self.load_step = "ready"
+                else:
+                    self.load_step = "error"
+                    raise
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        if self.model is None:
+            return ""
+
+        segments, info = self.model.transcribe(audio, beam_size=5)
+        text = "".join(s.text for s in segments).strip()
+        return text
+
+    def update_settings(self, settings):
+        self.settings = settings
+        self._load_model()

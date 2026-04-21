@@ -1,8 +1,11 @@
+import asyncio
+import json
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import StreamingResponse
 import uvicorn
 
 from .controller_service import WisprLocalService
@@ -19,6 +22,12 @@ app.add_middleware(
 )
 service = WisprLocalService(Path("config/settings.json"))
 
+
+@app.on_event("startup")
+async def _startup():
+    service.events.set_loop(asyncio.get_running_loop())
+
+
 @app.post("/start")
 async def start():
     service.start_recording()
@@ -34,6 +43,7 @@ async def status():
     return {
         "is_recording": service.is_recording,
         "is_processing": service.is_processing,
+        "partial_text": service.partial_text,
         "last_text": service.last_typed_text,
         "model_loading": service.model_loading,
         "model_loading_name": service.model_loading_name,
@@ -42,6 +52,37 @@ async def status():
         "model_download_current": service.transcriber.download_current,
         "model_download_total": service.transcriber.download_total,
     }
+
+
+@app.get("/events")
+async def events(request: Request):
+    """SSE stream that pushes status updates in real-time."""
+    queue = service.events.subscribe()
+
+    async def stream():
+        try:
+            # Send current state immediately on connect
+            initial = service._build_status()
+            yield f"data: {json.dumps(initial)}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            service.events.unsubscribe(queue)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @app.get("/settings")
 async def get_settings():

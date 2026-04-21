@@ -100,7 +100,7 @@ const Indicator = () => {
     if (!active) return null;
 
     const variantClass = recording ? "indicator-pill--recording" : "indicator-pill--processing";
-    const label = recording ? "Recording..." : "Processing...";
+    const label = recording ? "Recording..." : "Transcribing...";
 
     return (
         <div

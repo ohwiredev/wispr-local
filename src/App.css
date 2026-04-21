@@ -873,6 +873,28 @@ html.indicator-window #root {
   will-change: transform;
 }
 
+/* ── New row slide-in animation ── */
+.txn-table__row--new {
+  animation: row-slide-in 0.4s ease-out;
+}
+
+/* ── Speed badge in settings ── */
+.setting-row__label-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-row__speed-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #059669;
+  white-space: nowrap;
+}
+
 /* ── Keyframes ── */
 @keyframes indicator-spin {
   from { transform: rotate(0deg); }
@@ -888,4 +910,15 @@ html.indicator-window #root {
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+@keyframes row-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

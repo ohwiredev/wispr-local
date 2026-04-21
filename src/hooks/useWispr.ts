@@ -11,22 +11,12 @@ export interface WisprSettings {
     output: { method?: string };
 }
 
-/**
- * Polling cadence:
- *   - ACTIVE  (recording or processing): 400ms    -> indicator feels instant
- *   - IDLE    (backend ok, nothing happening): 1000ms
- *   - ERROR   (fetch failed): exponential backoff 1s -> 30s
- *   - GIVE UP after ~2 min of consecutive failures; user must click Retry.
- */
-const POLL_ACTIVE_MS = 400;
-const POLL_IDLE_MS = 1000;
-const ERROR_BACKOFF_START_MS = 1000;
-const ERROR_BACKOFF_MAX_MS = 30_000;
 const ERROR_GIVE_UP_MS = 2 * 60 * 1000;
 
 interface Status {
     is_recording: boolean;
     is_processing: boolean;
+    partial_text: string;
     last_text: string;
     model_loading: boolean;
     model_loading_name: string;
@@ -39,6 +29,7 @@ interface Status {
 const DEFAULT_STATUS: Status = {
     is_recording: false,
     is_processing: false,
+    partial_text: "",
     last_text: "",
     model_loading: false,
     model_loading_name: "",
@@ -57,67 +48,78 @@ export const useWispr = () => {
     const [settingsSaving, setSettingsSaving] = useState(false);
     const [settingsError, setSettingsError] = useState<string | null>(null);
 
-    const timerRef = useRef<number | null>(null);
-    const backoffRef = useRef<number>(ERROR_BACKOFF_START_MS);
+    const esRef = useRef<EventSource | null>(null);
     const firstFailureAtRef = useRef<number | null>(null);
-    const statusRef = useRef<Status>(status);
-    statusRef.current = status;
-
-    const clearTimer = () => {
-        if (timerRef.current !== null) {
-            window.clearTimeout(timerRef.current);
-            timerRef.current = null;
-        }
-    };
-
-    const scheduleNext = useCallback((ms: number) => {
-        clearTimer();
-        timerRef.current = window.setTimeout(() => {
-            void tick();
-            // Scheduling happens inside tick() itself after it knows the outcome.
-        }, ms);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    const tick = useCallback(async () => {
-        try {
-            const res = await fetch(`${WISPR_API_URL}/status`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = (await res.json()) as Status;
-            setStatus(data);
-            if (!apiOkRef.current) setApiOk(true);
-            if (gaveUpRef.current) setGaveUp(false);
-            firstFailureAtRef.current = null;
-            backoffRef.current = ERROR_BACKOFF_START_MS;
-            const active = data.is_recording || data.is_processing;
-            scheduleNext(active ? POLL_ACTIVE_MS : POLL_IDLE_MS);
-        } catch (e) {
-            console.error("Failed to fetch status", e);
-            if (apiOkRef.current) setApiOk(false);
-            const now = Date.now();
-            if (firstFailureAtRef.current === null) {
-                firstFailureAtRef.current = now;
-            }
-            if (now - firstFailureAtRef.current >= ERROR_GIVE_UP_MS) {
-                if (!gaveUpRef.current) setGaveUp(true);
-                return;
-            }
-            const next = backoffRef.current;
-            backoffRef.current = Math.min(next * 2, ERROR_BACKOFF_MAX_MS);
-            scheduleNext(next);
-        }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    const retryTimerRef = useRef<number | null>(null);
 
     const apiOkRef = useRef(apiOk);
     apiOkRef.current = apiOk;
     const gaveUpRef = useRef(gaveUp);
     gaveUpRef.current = gaveUp;
 
+    const connectSSE = useCallback(() => {
+        if (esRef.current) {
+            esRef.current.close();
+            esRef.current = null;
+        }
+        if (retryTimerRef.current !== null) {
+            window.clearTimeout(retryTimerRef.current);
+            retryTimerRef.current = null;
+        }
+
+        const es = new EventSource(`${WISPR_API_URL}/events`);
+        esRef.current = es;
+
+        es.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data) as Status;
+                setStatus(data);
+                if (!apiOkRef.current) setApiOk(true);
+                if (gaveUpRef.current) setGaveUp(false);
+                firstFailureAtRef.current = null;
+            } catch {
+                // ignore malformed messages
+            }
+        };
+
+        es.onopen = () => {
+            if (!apiOkRef.current) setApiOk(true);
+            if (gaveUpRef.current) setGaveUp(false);
+            firstFailureAtRef.current = null;
+        };
+
+        es.onerror = () => {
+            es.close();
+            esRef.current = null;
+            if (apiOkRef.current) setApiOk(false);
+
+            const now = Date.now();
+            if (firstFailureAtRef.current === null) {
+                firstFailureAtRef.current = now;
+            }
+            if (now - firstFailureAtRef.current >= ERROR_GIVE_UP_MS) {
+                setGaveUp(true);
+                return;
+            }
+            retryTimerRef.current = window.setTimeout(() => {
+                connectSSE();
+            }, 2000);
+        };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     useEffect(() => {
-        void tick();
-        return () => clearTimer();
-    }, [tick]);
+        connectSSE();
+        return () => {
+            if (esRef.current) {
+                esRef.current.close();
+                esRef.current = null;
+            }
+            if (retryTimerRef.current !== null) {
+                window.clearTimeout(retryTimerRef.current);
+            }
+        };
+    }, [connectSSE]);
 
     const refreshConfiguration = useCallback(async () => {
         setSettingsError(null);
@@ -162,10 +164,9 @@ export const useWispr = () => {
 
     const retryConnection = useCallback(() => {
         firstFailureAtRef.current = null;
-        backoffRef.current = ERROR_BACKOFF_START_MS;
         setGaveUp(false);
-        void tick();
-    }, [tick]);
+        connectSSE();
+    }, [connectSSE]);
 
     const saveSettingsPatch = async (patch: Partial<WisprSettings>) => {
         setSettingsSaving(true);

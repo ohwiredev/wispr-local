@@ -233,11 +233,14 @@ class CorrectionResolver:
         if not raw_text:
             return CorrectionResult(raw_text, False)
 
+        if not has_correction_markers(raw_text):
+            return CorrectionResult(raw_text, False)
+
         # Stage 1 — instant rule-based pre-processing
         stage1 = resolve_rule_based(raw_text)
 
-        # Stage 2 — LLM refinement on the (possibly cleaned) text
-        if self.enabled and self._llm is not None:
+        # Stage 2 — LLM only when markers survive rule cleanup
+        if self.enabled and self._llm is not None and has_correction_markers(stage1):
             try:
                 stage2 = self._generate(stage1).strip()
                 if stage2:
@@ -251,7 +254,6 @@ class CorrectionResolver:
             except Exception:
                 LOGGER.warning("LLM stage failed, using rule output", exc_info=True)
 
-        # LLM unavailable — use rule-based result directly
         is_correction = stage1 != raw_text
         if is_correction:
             LOGGER.info("Rule-only correction: %r -> %r", raw_text, stage1)

@@ -5,6 +5,24 @@ import { useWeeklyWords } from "../hooks/useWeeklyWords";
 
 type Page = "home" | "history" | "settings";
 
+const MODEL_SPEED_LABELS: Record<string, string> = {
+    "tiny": "Fastest",
+    "tiny.en": "Fastest",
+    "base": "Fast",
+    "base.en": "Fast",
+    "small": "Moderate",
+    "small.en": "Moderate",
+    "medium": "Slower",
+    "medium.en": "Slower",
+    "large-v1": "Slowest",
+    "large-v2": "Slowest",
+    "large-v3": "Slowest",
+    "distil-large-v2": "Fast (GPU)",
+    "distil-large-v3": "Fast (GPU)",
+    "distil-medium.en": "Moderate",
+    "distil-small.en": "Fast",
+};
+
 const HOTKEY_OPTIONS: { value: string; label: string }[] = [
     { value: "right_ctrl", label: "Right Ctrl" },
     { value: "left_ctrl", label: "Left Ctrl" },
@@ -295,7 +313,6 @@ function HomeView({
                         <path d="M4 5h12M4 8.5h9M4 12h11M4 15.5h7" />
                     </svg>
                     <h3 className="transcription-panel__title">Transcription</h3>
-                    {active && <span className="live-badge"><span className="live-dot live-dot--recording" />Live</span>}
                 </div>
                 <TranscriptionTable entries={entries} limit={5} />
             </div>
@@ -307,6 +324,20 @@ function HomeView({
 
 function TranscriptionTable({ entries, limit }: { entries: TranscriptionEntry[]; limit?: number }) {
     const rows = limit ? entries.slice(0, limit) : entries;
+    const newestId = useRef<number | null>(null);
+    const [animatingId, setAnimatingId] = useState<number | null>(null);
+
+    useEffect(() => {
+        if (rows.length === 0) return;
+        const top = rows[0];
+        if (newestId.current !== null && top.id !== newestId.current) {
+            setAnimatingId(top.id);
+            const timer = window.setTimeout(() => setAnimatingId(null), 400);
+            newestId.current = top.id;
+            return () => window.clearTimeout(timer);
+        }
+        newestId.current = top.id;
+    }, [rows]);
 
     if (rows.length === 0) {
         return (
@@ -322,7 +353,7 @@ function TranscriptionTable({ entries, limit }: { entries: TranscriptionEntry[];
             <table className="txn-table">
                 <tbody>
                     {rows.map((entry) => (
-                        <tr key={entry.id} className="txn-table__row">
+                        <tr key={entry.id} className={`txn-table__row ${entry.id === animatingId ? "txn-table__row--new" : ""}`}>
                             <td className="txn-table__cell txn-table__cell--text">{entry.text}</td>
                             <td className="txn-table__cell txn-table__cell--time" title={formatTime(entry.time)}>
                                 {formatTimeAgo(entry.time)}
@@ -489,7 +520,12 @@ function SettingsView({
                         />
                     </div>
                     <div className="setting-row">
-                        <label>Transcription model</label>
+                        <div className="setting-row__label-group">
+                            <label>Transcription model</label>
+                            {MODEL_SPEED_LABELS[draftModel] && (
+                                <span className="setting-row__speed-badge">{MODEL_SPEED_LABELS[draftModel]}</span>
+                            )}
+                        </div>
                         <Dropdown
                             value={draftModel}
                             options={modelOptionsList}

@@ -49,7 +49,7 @@ class TextOutputManager:
                 self.keyboard.release(mod)
             except Exception:
                 pass
-        time.sleep(0.05)
+        time.sleep(0.02)
 
     def _paste_from_clipboard(self):
         """Simulate Ctrl+V to paste clipboard contents."""
@@ -69,11 +69,34 @@ class TextOutputManager:
                 "skipping auto-type (text is on clipboard, paste with Ctrl+V)"
             )
             return
+        self._insert(text)
+
+    def _insert(self, text: str):
+        """Insert text at the cursor without any modifier/focus checks."""
         if self._use_paste:
             pyperclip.copy(text)
             self._paste_from_clipboard()
         else:
             self.keyboard.type(text)
+
+    def stream_insert(self, text: str):
+        """Type a delta chunk during streaming — skips modifier release."""
+        self._insert(text)
+
+    def _select_previous_text(self, length: int):
+        """Select *length* characters to the left using Shift+Left word jumps."""
+        if length <= 0:
+            return
+        # Use Ctrl+Shift+Left to select word-by-word (much faster than per-char)
+        # Estimate: average word ~5 chars. Over-select, then we replace anyway.
+        word_jumps = max(1, (length + 4) // 5)
+        for _ in range(word_jumps):
+            self.keyboard.press(Key.ctrl_l)
+            self.keyboard.press(Key.shift_l)
+            self.keyboard.press(Key.left)
+            self.keyboard.release(Key.left)
+            self.keyboard.release(Key.shift_l)
+            self.keyboard.release(Key.ctrl_l)
 
     def replace_previous_and_type(self, previous_text: str, new_text: str):
         self._release_modifiers()
@@ -83,9 +106,8 @@ class TextOutputManager:
                 "skipping auto-type (text is on clipboard, paste with Ctrl+V)"
             )
             return
-        for _ in range(len(previous_text)):
-            self.keyboard.press(Key.backspace)
-            self.keyboard.release(Key.backspace)
+
+        self._select_previous_text(len(previous_text))
 
         if self._use_paste:
             pyperclip.copy(new_text)

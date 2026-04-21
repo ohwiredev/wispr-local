@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import threading
 from pathlib import Path
@@ -11,6 +12,56 @@ from .output import TextOutputManager
 from .settings_util import merge_settings, validate_transcription_model
 
 LOGGER = logging.getLogger(__name__)
+
+
+class EventBus:
+    """Simple pub/sub for SSE clients. Thread-safe across asyncio / threads."""
+
+    def __init__(self):
+        self._subscribers: list[asyncio.Queue] = []
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop):
+        """Must be called once from the asyncio thread (e.g. on startup)."""
+        self._loop = loop
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue()
+        with self._lock:
+            self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue):
+        with self._lock:
+            try:
+                self._subscribers.remove(q)
+            except ValueError:
+                pass
+
+    def publish(self, event: dict):
+        """Safely enqueue *event* from any thread."""
+        with self._lock:
+            subs = list(self._subscribers)
+
+        if not subs:
+            return
+
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            for q in subs:
+                loop.call_soon_threadsafe(self._safe_put, q, event)
+        else:
+            for q in subs:
+                self._safe_put(q, event)
+
+    @staticmethod
+    def _safe_put(q: asyncio.Queue, event: dict):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
 
 class WisprLocalService:
     def __init__(self, settings_path: Path):
@@ -29,7 +80,9 @@ class WisprLocalService:
         self.last_typed_text = ""
         self.is_recording = False
         self.is_processing = False
+        self.partial_text = ""
         self._process_lock = threading.Lock()
+        self.events = EventBus()
 
         self.model_loading = False
         self.model_loading_name = ""
@@ -81,11 +134,31 @@ class WisprLocalService:
         except Exception:
             LOGGER.exception("Error in hotkey release handler")
 
+    def _publish_status(self):
+        self.events.publish(self._build_status())
+
+    def _build_status(self) -> dict:
+        return {
+            "type": "status",
+            "is_recording": self.is_recording,
+            "is_processing": self.is_processing,
+            "partial_text": self.partial_text,
+            "last_text": self.last_typed_text,
+            "model_loading": self.model_loading,
+            "model_loading_name": self.model_loading_name,
+            "model_loading_error": self.model_loading_error,
+            "model_loading_step": self.transcriber.load_step,
+            "model_download_current": self.transcriber.download_current,
+            "model_download_total": self.transcriber.download_total,
+        }
+
     def start_recording(self):
         if self.is_recording: return
         self.output_manager.save_target_window()
+        self.partial_text = ""
         self.recorder.start()
         self.is_recording = True
+        self._publish_status()
 
     def stop_recording_and_process(self):
         if not self.is_recording: return
@@ -93,26 +166,49 @@ class WisprLocalService:
         audio = self.recorder.stop()
         
         if audio.size == 0:
+            self._publish_status()
             return
 
         self.is_processing = True
+        self._publish_status()
         threading.Thread(target=self._process, args=(audio,), daemon=True).start()
 
     def _process(self, audio):
         with self._process_lock:
             try:
-                text = self.transcriber.transcribe(audio)
+                streamed_text = ""
+                self.output_manager._release_modifiers()
+
+                def on_segment(partial):
+                    nonlocal streamed_text
+                    self.partial_text = partial
+                    self._publish_status()
+                    delta = partial[len(streamed_text):]
+                    if delta and self.output_manager._is_target_window_focused():
+                        self.output_manager.stream_insert(delta)
+                    streamed_text = partial
+
+                text = self.transcriber.transcribe(audio, on_segment=on_segment)
                 processed = self.text_processor.process(text)
 
                 if processed.text:
                     self.output_manager.copy_to_clipboard(processed.text)
-                    if processed.is_correction and self.last_typed_text:
-                        self.output_manager.replace_previous_and_type(self.last_typed_text, processed.text)
+                    if streamed_text:
+                        if processed.text != streamed_text:
+                            self.output_manager.replace_previous_and_type(
+                                streamed_text, processed.text,
+                            )
+                    elif processed.is_correction and self.last_typed_text:
+                        self.output_manager.replace_previous_and_type(
+                            self.last_typed_text, processed.text,
+                        )
                     else:
                         self.output_manager.type_text(processed.text)
                     self.last_typed_text = processed.text
             finally:
+                self.partial_text = ""
                 self.is_processing = False
+                self._publish_status()
 
     def update_settings(self, patch: dict):
         """Apply a partial or full settings dict, persist, and refresh components."""

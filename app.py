@@ -1,4 +1,12 @@
+import logging
 import os
+
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:  %(name)s - %(message)s",
+)
 
 import uvicorn
 from wispr_local.server import app

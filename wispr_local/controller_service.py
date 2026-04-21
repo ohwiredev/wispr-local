@@ -4,6 +4,7 @@ from pathlib import Path
 from pynput import keyboard
 from .audio import AudioRecorder
 from .config import SettingsManager
+from .correction_resolver import CorrectionResolver
 from .transcriber import WhisperTranscriber
 from .text_processing import TextProcessor
 from .output import TextOutputManager
@@ -18,12 +19,17 @@ class WisprLocalService:
 
         self.recorder = AudioRecorder(self.settings["audio"])
         self.transcriber = WhisperTranscriber(self.settings["transcription"])
-        self.text_processor = TextProcessor(self.settings["text_processing"])
+        self.correction_resolver = CorrectionResolver(self.settings["correction"])
+        self.text_processor = TextProcessor(
+            self.settings["text_processing"],
+            correction_resolver=self.correction_resolver,
+        )
         self.output_manager = TextOutputManager(self.settings["output"])
 
         self.last_typed_text = ""
         self.is_recording = False
         self.is_processing = False
+        self._process_lock = threading.Lock()
 
         self.model_loading = False
         self.model_loading_name = ""
@@ -48,6 +54,7 @@ class WisprLocalService:
     def _start_listener(self):
         if self._listener is not None:
             self._listener.stop()
+
         self._listener = keyboard.Listener(
             on_press=self._handle_press,
             on_release=self._handle_release,
@@ -62,8 +69,8 @@ class WisprLocalService:
                 if not self.is_recording:
                     LOGGER.info("Hotkey pressed: Starting recording")
                     self.start_recording()
-        except AttributeError:
-            pass
+        except Exception:
+            LOGGER.exception("Error in hotkey press handler")
 
     def _handle_release(self, key):
         try:
@@ -71,11 +78,12 @@ class WisprLocalService:
                 if self.is_recording:
                     LOGGER.info("Hotkey released: Stopping recording")
                     self.stop_recording_and_process()
-        except AttributeError:
-            pass
+        except Exception:
+            LOGGER.exception("Error in hotkey release handler")
 
     def start_recording(self):
         if self.is_recording: return
+        self.output_manager.save_target_window()
         self.recorder.start()
         self.is_recording = True
 
@@ -91,19 +99,20 @@ class WisprLocalService:
         threading.Thread(target=self._process, args=(audio,), daemon=True).start()
 
     def _process(self, audio):
-        try:
-            text = self.transcriber.transcribe(audio)
-            processed = self.text_processor.process(text)
-            
-            if processed.text:
-                self.output_manager.copy_to_clipboard(processed.text)
-                if processed.is_correction and self.last_typed_text:
-                    self.output_manager.replace_previous_and_type(self.last_typed_text, processed.text)
-                else:
-                    self.output_manager.type_text(processed.text)
-                self.last_typed_text = processed.text
-        finally:
-            self.is_processing = False
+        with self._process_lock:
+            try:
+                text = self.transcriber.transcribe(audio)
+                processed = self.text_processor.process(text)
+
+                if processed.text:
+                    self.output_manager.copy_to_clipboard(processed.text)
+                    if processed.is_correction and self.last_typed_text:
+                        self.output_manager.replace_previous_and_type(self.last_typed_text, processed.text)
+                    else:
+                        self.output_manager.type_text(processed.text)
+                    self.last_typed_text = processed.text
+            finally:
+                self.is_processing = False
 
     def update_settings(self, patch: dict):
         """Apply a partial or full settings dict, persist, and refresh components."""
@@ -118,6 +127,7 @@ class WisprLocalService:
         self.settings = merged
         self.settings_manager.save(merged)
         self.recorder.update_settings(merged["audio"])
+        self.correction_resolver.update_settings(merged["correction"])
         self.text_processor.update_settings(merged["text_processing"])
         self.output_manager.update_settings(merged["output"])
 

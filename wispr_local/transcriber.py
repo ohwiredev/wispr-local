@@ -67,6 +67,13 @@ class WhisperTranscriber:
                 local_dir = snapshot_download(
                     repo_id,
                     local_dir=str(self.model_path / model_name),
+                    allow_patterns=[
+                        "config.json",
+                        "preprocessor_config.json",
+                        "model.bin",
+                        "tokenizer.json",
+                        "vocabulary.*",
+                    ],
                     tqdm_class=progress_cls,
                 )
                 LOGGER.info("Model files ready at %s", local_dir)
@@ -94,14 +101,36 @@ class WhisperTranscriber:
                     self.load_step = "error"
                     raise
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio: np.ndarray, on_segment=None) -> str:
+        """Transcribe audio. If *on_segment* is provided it is called with the
+        cumulative text after each decoded segment (enables streaming UI)."""
         if self.model is None:
             return ""
 
-        segments, info = self.model.transcribe(audio, beam_size=5)
-        text = "".join(s.text for s in segments).strip()
-        return text
+        segments, _info = self.model.transcribe(
+            audio,
+            beam_size=1,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=300),
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+        )
+
+        partial = ""
+        for seg in segments:
+            partial += seg.text
+            if on_segment is not None:
+                on_segment(partial.strip())
+
+        return partial.strip()
 
     def update_settings(self, settings):
+        old = self.settings
         self.settings = settings
-        self._load_model()
+        model_changed = (
+            old.get("model") != settings.get("model")
+            or old.get("device") != settings.get("device")
+            or old.get("compute_type") != settings.get("compute_type")
+        )
+        if model_changed:
+            self._load_model()

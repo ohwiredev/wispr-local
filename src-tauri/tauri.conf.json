@@ -14,7 +14,7 @@
       {
         "label": "main",
         "title": "Wispr Local - Dashboard",
-        "width": 900,
+        "width": 1200,
         "height": 700,
         "resizable": true,
         "fullscreen": false,

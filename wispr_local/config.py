@@ -14,7 +14,12 @@ class SettingsManager:
             "audio": {"sample_rate": 16000, "device": None},
             "transcription": {"model": "base", "device": "cpu", "compute_type": "int8"},
             "text_processing": {},
-            "output": {"method": "type"},
+            "correction": {
+                "enabled": True,
+                "repo_id": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+                "model_filename": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+            },
+            "output": {"method": "paste"},
         }
 
     def load(self) -> Dict[str, Any]:

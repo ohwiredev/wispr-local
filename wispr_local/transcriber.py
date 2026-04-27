@@ -59,33 +59,6 @@ class WhisperTranscriber:
                 self.download_total = 0
                 LOGGER.info("Loading model %s on %s (%s)", model_name, device, compute_type)
 
-                # Resolve the HF repo ID from the short model name
-                repo_id = _MODELS.get(model_name, model_name)
-
-                # Step 1: download (or verify cache) with progress reporting
-                self.load_step = "downloading"
-                progress_cls = _make_progress_tqdm(self)
-                local_dir = snapshot_download(
-                    repo_id,
-                    local_dir=str(self.model_path / model_name),
-                    allow_patterns=[
-                        "config.json",
-                        "preprocessor_config.json",
-                        "model.bin",
-                        "tokenizer.json",
-                        "vocabulary.*",
-                    ],
-                    tqdm_class=progress_cls,
-                )
-                LOGGER.info("Model files ready at %s", local_dir)
-
-                # Step 2: load from the local path (no network)
-                self.load_step = "loading"
-                model = WhisperModel(
-                    local_dir,
-                    device=device,
-                    compute_type=compute_type,
-                )
 
                 self.model = model
                 self.load_step = "ready"

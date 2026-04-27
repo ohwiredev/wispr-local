@@ -7,10 +7,27 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies
 node_modules
+venv
+.venv
+env
+.env
+
+# Build outputs
 dist
 dist-ssr
+build
+*.spec
+src-tauri/target
+src-tauri/resources/wispr-backend/
+
+# Local data & models
+models
 *.local
+__pycache__
+.pytest_cache
+.coverage
 
 # Editor directories and files
 .vscode/*
@@ -22,10 +39,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-.vscode
-models
-__pycache__
 
 # Nvidia CUDA DLLs
 cublas64_12.dll

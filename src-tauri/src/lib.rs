@@ -3,6 +3,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, WindowEvent,
 };
+use tauri_plugin_shell::ShellExt;
 
 const API_BASE: &str = "http://127.0.0.1:8001";
 
@@ -74,6 +75,20 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![toggle_dashboard, update_tray_models])
         .setup(|app| {
+            #[cfg(not(dev))]
+            {
+                let resource_path = app
+                    .path()
+                    .resolve(
+                        "resources/wispr-backend/wispr-backend.exe",
+                        tauri::path::BaseDirectory::Resource,
+                    )
+                    .expect("failed to resolve backend path");
+
+                let sidecar_command = app.shell().command(resource_path.to_str().unwrap());
+                let (_rx, _child) = sidecar_command.spawn().expect("failed to spawn backend");
+            }
+
             let quit = MenuItemBuilder::new("Quit").id("quit").build(app)?;
             let menu = MenuBuilder::new(app).item(&quit).build()?;
 

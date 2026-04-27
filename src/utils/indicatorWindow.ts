@@ -2,6 +2,7 @@ import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   availableMonitors,
+  currentMonitor,
   cursorPosition,
   monitorFromPoint,
   primaryMonitor,
@@ -44,7 +45,7 @@ export async function syncIndicatorWindow(
   }
 
   if (!monitor) {
-    monitor = (await win.currentMonitor()) ?? (await primaryMonitor());
+    monitor = (await currentMonitor()) ?? (await primaryMonitor());
   }
   if (isCancelled()) return;
 

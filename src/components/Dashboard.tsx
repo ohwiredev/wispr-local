@@ -247,7 +247,6 @@ function HomeView({
     wordCount: number;
     goToSettings: () => void;
 }) {
-    const active = status.is_recording || status.is_processing;
     const statusLabel = status.is_recording
         ? "Recording..."
         : status.is_processing

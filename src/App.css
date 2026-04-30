@@ -10,6 +10,8 @@
   --text-primary: #1a1a1a;
   --text-secondary: #6b7280;
   --border-color: #e5e7eb;
+  --header-bg: #f3efff;
+  --header-height: 40px;
 }
 
 html,
@@ -34,6 +36,20 @@ html.indicator-window #root {
 .app-container {
   height: 100vh;
   display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--bg-color);
+  border-radius: 12px;
+}
+
+.app-container.is-maximized {
+  border-radius: 0;
+}
+
+.main-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
 }
 
 .app-container--indicator {
@@ -148,6 +164,82 @@ html.indicator-window #root {
   overflow-y: auto;
   background: var(--bg-color);
 }
+
+/* ── Title Bar ── */
+.title-bar {
+  height: var(--header-height);
+  background: var(--header-bg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 0 12px;
+  user-select: none;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  flex-shrink: 0;
+  position: relative;
+}
+
+.title-bar__drag-region {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 0;
+}
+
+.title-bar__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 100%;
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.title-bar__icon,
+.title-bar__title {
+  pointer-events: none;
+}
+
+.title-bar__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+}
+
+.title-bar__right {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  position: relative;
+  z-index: 1;
+}
+
+
+.title-bar__btn {
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #555;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.title-bar__btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.title-bar__btn--close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
 
 .content__header {
   margin-bottom: 28px;

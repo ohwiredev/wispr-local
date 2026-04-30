@@ -25,7 +25,7 @@ function App() {
 
   if (label === "main") {
     return (
-      <div className={`app-container ${isMaximized ? "is-maximized" : ""}`}>
+      <div className={`app-container app-container--main ${isMaximized ? "is-maximized" : ""}`}>
         <TitleBar />
         <div className="main-layout">
           <Dashboard />

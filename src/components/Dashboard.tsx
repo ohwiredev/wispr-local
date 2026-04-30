@@ -762,7 +762,7 @@ const Dashboard = () => {
         return base.includes(m) ? base : [m, ...base];
     }, [transcriptionModels, settings?.transcription?.model]);
 
-    const currentModel = settings?.transcription?.model ?? "base";
+    const currentModel = settings?.transcription?.model ?? "distil-medium.en";
     const currentDevice: "cpu" | "cuda" =
         settings?.transcription?.device === "cuda" ? "cuda" : "cpu";
     const cudaForSettings = capabilities?.cuda_available ?? status.cuda_available;

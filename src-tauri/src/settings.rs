@@ -71,7 +71,7 @@ impl Default for WisprSettings {
                 device: serde_json::Value::Null,
             },
             transcription: TranscriptionSettings {
-                model: "distil-large-v3".into(),
+                model: "distil-medium.en".into(),
                 device: "cpu".into(),
                 compute_type: "int8".into(),
             },

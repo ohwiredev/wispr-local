@@ -3,11 +3,16 @@ from ctypes import wintypes
 import sys
 import time
 import logging
+import threading
 import pyperclip
 
 LOGGER = logging.getLogger(__name__)
 
 # --- Win32 Definitions ---
+# Use use_last_error=True to capture GetLastError properly
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+# Keep a reference for non-error-checked calls too
 user32 = ctypes.windll.user32
 
 INPUT_KEYBOARD = 1
@@ -27,20 +32,73 @@ class KEYBDINPUT(ctypes.Structure):
     ]
 
 
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_size_t)),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    ]
+
+
 class INPUT_UNION(ctypes.Union):
-    _fields_ = [("ki", KEYBDINPUT)]
+    _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
 
 
 class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", INPUT_UNION)]
 
 
+# Set proper arg/return types for SendInput
+_user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
+_user32.SendInput.restype = ctypes.c_uint
+
+_debug_logged = False
+
+
+def _log_debug_info():
+    """Log window station and desktop info once to help diagnose SendInput failures."""
+    global _debug_logged
+    if _debug_logged:
+        return
+    _debug_logged = True
+    try:
+        hwnd_fg = user32.GetForegroundWindow()
+        length = user32.GetWindowTextLengthW(hwnd_fg)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd_fg, buf, length + 1)
+        wstation = user32.GetProcessWindowStation()
+        desktop = user32.GetThreadDesktop(_kernel32.GetCurrentThreadId())
+        console = _kernel32.GetConsoleWindow()
+        LOGGER.info(
+            "SendInput debug: fg='%s' (HWND=%s), WStation=%s, Desktop=%s, Console=%s, "
+            "sizeof(INPUT)=%d, thread=%s",
+            buf.value, hwnd_fg, wstation, desktop, console,
+            ctypes.sizeof(INPUT), threading.current_thread().name,
+        )
+    except Exception as e:
+        LOGGER.warning("Failed to log debug info: %s", e)
+
+
 def _send_input(inputs):
     n = len(inputs)
     input_array = (INPUT * n)(*inputs)
-    sent = user32.SendInput(n, ctypes.byref(input_array), ctypes.sizeof(INPUT))
+    sent = _user32.SendInput(n, input_array, ctypes.sizeof(INPUT))
     if sent != n:
-        LOGGER.warning("SendInput: requested %d, sent %d", n, sent)
+        err = ctypes.get_last_error()
+        LOGGER.warning("SendInput: requested %d, sent %d, error=%d (0x%x), thread=%s",
+                       n, sent, err, err, threading.current_thread().name)
+        _log_debug_info()
 
 
 def _make_key_input(vk, flags=0):

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { wisprApiPortLabel } from "../apiConfig";
+
 import { useWispr, type WisprCapabilities, type WisprSettings } from "../hooks/useWispr";
 import { useWeeklyWords } from "../hooks/useWeeklyWords";
 
@@ -21,6 +21,24 @@ const MODEL_SPEED_LABELS: Record<string, string> = {
     "distil-large-v3": "Fast (GPU)",
     "distil-medium.en": "Moderate",
     "distil-small.en": "Fast",
+};
+
+const MODEL_SIZE_LABELS: Record<string, string> = {
+    "tiny": "75 MB",
+    "tiny.en": "75 MB",
+    "base": "145 MB",
+    "base.en": "145 MB",
+    "small": "485 MB",
+    "small.en": "485 MB",
+    "medium": "1.5 GB",
+    "medium.en": "1.5 GB",
+    "large-v1": "3.1 GB",
+    "large-v2": "3.1 GB",
+    "large-v3": "3.1 GB",
+    "distil-large-v2": "1.5 GB",
+    "distil-large-v3": "1.5 GB",
+    "distil-medium.en": "760 MB",
+    "distil-small.en": "330 MB",
 };
 
 const HOTKEY_OPTIONS: { value: string; label: string }[] = [
@@ -98,17 +116,46 @@ function ModelLoadingBanner({
     downloadCurrent: number;
     downloadTotal: number;
 }) {
+    const [speed, setSpeed] = useState<string>("0 B/s");
+    const lastUpdate = useRef<{ bytes: number; time: number } | null>(null);
+
+    useEffect(() => {
+        if (step !== "downloading" || downloadCurrent === 0) {
+            lastUpdate.current = null;
+            setSpeed("0 B/s");
+            return;
+        }
+
+        const now = Date.now();
+        if (lastUpdate.current) {
+            const dt = (now - lastUpdate.current.time) / 1000;
+            if (dt >= 0.5) { // Update speed every 500ms
+                const db = downloadCurrent - lastUpdate.current.bytes;
+                const bps = db / dt;
+                setSpeed(`${formatBytes(Math.round(bps))}/s`);
+                lastUpdate.current = { bytes: downloadCurrent, time: now };
+            }
+        } else {
+            lastUpdate.current = { bytes: downloadCurrent, time: now };
+        }
+    }, [downloadCurrent, step]);
+
     const pct = downloadTotal > 0 ? Math.min(100, Math.round((downloadCurrent / downloadTotal) * 100)) : 0;
     const isDownloading = step === "downloading" && downloadTotal > 0 && pct < 100;
 
     let message: React.ReactNode;
-    if (step === "checking") {
-        message = <>Checking if <strong>{name}</strong> is cached...</>;
+    if (step === "checking" || step === "verifying") {
+        message = <>Verifying local files for <strong>{name}</strong>...</>;
     } else if (isDownloading) {
         message = (
-            <>
-                Downloading <strong>{name}</strong> — {pct}% ({formatBytes(downloadCurrent)} / {formatBytes(downloadTotal)})
-            </>
+            <div className="model-loading-banner__message-grid">
+                <div className="model-loading-banner__main-text">
+                    Downloading <strong>{name}</strong> — {pct}%
+                </div>
+                <div className="model-loading-banner__meta-text">
+                    {formatBytes(downloadCurrent)} / {formatBytes(downloadTotal)} • {speed}
+                </div>
+            </div>
         );
     } else if (step === "downloading") {
         message = <>Downloading <strong>{name}</strong>...</>;
@@ -238,6 +285,7 @@ function HomeView({
     entries,
     wordCount,
     goToSettings,
+    modelLoading,
 }: {
     status: { is_recording: boolean; is_processing: boolean };
     currentModel: string;
@@ -246,26 +294,33 @@ function HomeView({
     entries: TranscriptionEntry[];
     wordCount: number;
     goToSettings: () => void;
+    modelLoading?: boolean;
 }) {
-    const statusLabel = status.is_recording
-        ? "Recording..."
-        : status.is_processing
-            ? "Transcribing..."
-            : "Ready";
-    const statusVariant = status.is_recording
-        ? "recording"
-        : status.is_processing
-            ? "processing"
-            : "idle";
+    const statusLabel = modelLoading
+        ? "Initializing..."
+        : status.is_recording
+            ? "Recording..."
+            : status.is_processing
+                ? "Transcribing..."
+                : "Ready";
+    const statusVariant = modelLoading
+        ? "initializing"
+        : status.is_recording
+            ? "recording"
+            : status.is_processing
+                ? "processing"
+                : "idle";
 
     return (
         <>
             {/* Hero */}
             <div className="hero">
                 <div className="hero__text">
-                    <h2 className="hero__title">Welcome back</h2>
+                    <h2 className="hero__title">{modelLoading ? "Setting things up" : "Welcome back"}</h2>
                     <p className="hero__subtitle">
-                        Press <kbd className="kbd">{hotkeyLabel}</kbd> to start recording
+                        {modelLoading 
+                            ? "Please wait while we prepare the transcription model..." 
+                            : <>Press <kbd className="kbd">{hotkeyLabel}</kbd> to start recording</>}
                     </p>
                 </div>
                 <span className={`hero__badge hero__badge--${statusVariant}`}>
@@ -399,12 +454,14 @@ function Dropdown({
     disabled,
     onChange,
     isOptionDisabled,
+    isOptionDownloaded,
 }: {
     value: string;
     options: string[];
     disabled?: boolean;
     onChange: (v: string) => void;
     isOptionDisabled?: (option: string) => boolean;
+    isOptionDownloaded?: (option: string) => boolean;
 }) {
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
@@ -454,7 +511,17 @@ function Dropdown({
                                 close();
                             }}
                         >
-                            {opt}
+                            <div className="dropdown__item-content">
+                                <div className="dropdown__item-header">
+                                    <span className="dropdown__item-label">{opt}</span>
+                                    {isOptionDownloaded?.(opt) && (
+                                        <span className="dropdown__item-badge">Downloaded</span>
+                                    )}
+                                </div>
+                                {MODEL_SIZE_LABELS[opt] && (
+                                    <span className="dropdown__item-size">{MODEL_SIZE_LABELS[opt]}</span>
+                                )}
+                            </div>
                             {opt === value && (
                                 <svg className="dropdown__check" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                     <path d="M3 8.5l3.5 3.5 6.5-7" />
@@ -487,6 +554,7 @@ function SettingsView({
     gpuPackMessage,
     gpuPackError,
     installGpuPack,
+    downloadedModels,
 }: {
     settings: ReturnType<typeof useWispr>["settings"];
     apiOk: boolean;
@@ -504,6 +572,7 @@ function SettingsView({
     gpuPackMessage: string | null;
     gpuPackError: string | null;
     installGpuPack: () => Promise<boolean>;
+    downloadedModels: string[];
 }) {
     const [draftHotkey, setDraftHotkey] = useState(currentHotkey);
     const [draftModel, setDraftModel] = useState(currentModel);
@@ -575,6 +644,7 @@ function SettingsView({
                             value={draftModel}
                             options={modelOptionsList}
                             disabled={!apiOk || !settings || busy}
+                            isOptionDownloaded={(opt) => downloadedModels.includes(opt)}
                             onChange={setDraftModel}
                         />
                     </div>
@@ -652,8 +722,6 @@ const Dashboard = () => {
     const {
         status,
         apiOk,
-        gaveUp,
-        retryConnection,
         settings,
         transcriptionModels,
         settingsSaving,
@@ -703,18 +771,7 @@ const Dashboard = () => {
         <>
             <Sidebar page={page} setPage={setPage} />
             <div className="content">
-                {!apiOk && (
-                    <div className="api-offline-banner" role="status">
-                        <span>
-                            {gaveUp
-                                ? `Backend still unreachable on port ${wisprApiPortLabel()}.`
-                                : `Backend unreachable — start the Python service (port ${wisprApiPortLabel()})`}
-                        </span>
-                        <button type="button" className="api-offline-banner__retry" onClick={retryConnection}>
-                            Retry
-                        </button>
-                    </div>
-                )}
+
 
                 {status.model_loading && (
                     <ModelLoadingBanner
@@ -739,6 +796,7 @@ const Dashboard = () => {
                         entries={entries}
                         wordCount={wordCount}
                         goToSettings={() => setPage("settings")}
+                        modelLoading={status.model_loading}
                     />
                 )}
                 {page === "history" && <HistoryView entries={entries} />}
@@ -760,6 +818,7 @@ const Dashboard = () => {
                         gpuPackMessage={gpuPackMessage}
                         gpuPackError={gpuPackError}
                         installGpuPack={installGpuPack}
+                        downloadedModels={status.downloaded_models}
                     />
                 )}
             </div>

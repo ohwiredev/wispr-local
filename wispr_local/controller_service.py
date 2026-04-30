@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import time
 from pathlib import Path
 from pynput import keyboard
 from .audio import AudioRecorder
@@ -9,6 +10,7 @@ from .correction_resolver import CorrectionResolver
 from .transcriber import WhisperTranscriber
 from .text_processing import TextProcessor
 from .output import TextOutputManager
+from .paths import get_models_path
 from .settings_util import (
     cuda_available,
     merge_settings,
@@ -19,53 +21,8 @@ from .settings_util import (
 LOGGER = logging.getLogger(__name__)
 
 
-class EventBus:
-    """Simple pub/sub for SSE clients. Thread-safe across asyncio / threads."""
-
-    def __init__(self):
-        self._subscribers: list[asyncio.Queue] = []
-        self._lock = threading.Lock()
-        self._loop: asyncio.AbstractEventLoop | None = None
-
-    def set_loop(self, loop: asyncio.AbstractEventLoop):
-        """Must be called once from the asyncio thread (e.g. on startup)."""
-        self._loop = loop
-
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue()
-        with self._lock:
-            self._subscribers.append(q)
-        return q
-
-    def unsubscribe(self, q: asyncio.Queue):
-        with self._lock:
-            try:
-                self._subscribers.remove(q)
-            except ValueError:
-                pass
-
-    def publish(self, event: dict):
-        """Safely enqueue *event* from any thread."""
-        with self._lock:
-            subs = list(self._subscribers)
-
-        if not subs:
-            return
-
-        loop = self._loop
-        if loop is not None and loop.is_running():
-            for q in subs:
-                loop.call_soon_threadsafe(self._safe_put, q, event)
-        else:
-            for q in subs:
-                self._safe_put(q, event)
-
-    @staticmethod
-    def _safe_put(q: asyncio.Queue, event: dict):
-        try:
-            q.put_nowait(event)
-        except asyncio.QueueFull:
-            pass
+import sys
+import json
 
 
 class WisprLocalService:
@@ -75,26 +32,30 @@ class WisprLocalService:
         self.cuda_available = cuda_available()
 
         self.recorder = AudioRecorder(self.settings["audio"])
-        self.transcriber = WhisperTranscriber(self.settings["transcription"])
+        self.last_typed_text = ""
+        self.is_recording = False
+        self.is_processing = False
+        self.partial_text = ""
+        self._process_lock = threading.Lock()
+
+        self.model_loading = False
+        self.model_loading_name = ""
+        self.model_loading_error = None
+
+        self.transcriber = WhisperTranscriber(
+            self.settings["transcription"], 
+            on_progress=self._publish_status,
+            on_status_change=self._publish_status
+        )
         if self.transcriber.load_step == "error":
             self.model_loading_error = self.transcriber.load_error
+
         self.correction_resolver = CorrectionResolver(self.settings["correction"])
         self.text_processor = TextProcessor(
             self.settings["text_processing"],
             correction_resolver=self.correction_resolver,
         )
         self.output_manager = TextOutputManager(self.settings["output"])
-
-        self.last_typed_text = ""
-        self.is_recording = False
-        self.is_processing = False
-        self.partial_text = ""
-        self._process_lock = threading.Lock()
-        self.events = EventBus()
-
-        self.model_loading = False
-        self.model_loading_name = ""
-        self.model_loading_error = None
 
         self._hotkey_map = {
             "right_ctrl": keyboard.Key.ctrl_r,
@@ -143,26 +104,72 @@ class WisprLocalService:
             LOGGER.exception("Error in hotkey release handler")
 
     def _publish_status(self):
-        self.events.publish(self._build_status())
+        print(json.dumps({"event": "wispr-status-update", "data": self._build_status()}), flush=True)
 
     def _build_status(self) -> dict:
-        return {
+        # Defensive checks for initialization race conditions
+        is_recording = getattr(self, "is_recording", False)
+        is_processing = getattr(self, "is_processing", False)
+        partial_text = getattr(self, "partial_text", "")
+        
+        status = {
             "type": "status",
-            "is_recording": self.is_recording,
-            "is_processing": self.is_processing,
-            "partial_text": self.partial_text,
-            "last_text": self.last_typed_text,
-            "model_loading": self.model_loading,
-            "model_loading_name": self.model_loading_name,
-            "model_loading_error": self.model_loading_error,
-            "model_loading_step": self.transcriber.load_step,
-            "model_download_current": self.transcriber.download_current,
-            "model_download_total": self.transcriber.download_total,
-            "cuda_available": self.cuda_available,
+            "is_recording": is_recording,
+            "is_processing": is_processing,
+            "partial_text": partial_text,
+            "last_text": getattr(self, "last_typed_text", ""),
         }
+
+        if hasattr(self, "transcriber") and self.transcriber:
+            status.update({
+                "model_loading": self.transcriber.load_step not in ["ready", "idle", "error"],
+                "model_loading_name": self.transcriber.settings.get("model", ""),
+                "model_loading_error": self.transcriber.load_error,
+                "model_loading_step": self.transcriber.load_step,
+                "model_download_current": self.transcriber.download_current,
+                "model_download_total": self.transcriber.download_total,
+                "cuda_available": getattr(self, "cuda_available", False),
+                "downloaded_models": self._get_downloaded_models(),
+            })
+        
+        return status
+
+    def get_status(self) -> dict:
+        """Explicitly return current status (used on startup)."""
+        return self._build_status()
+
+    def _get_downloaded_models(self) -> list[str]:
+        """Scan models directory for downloaded Whisper models."""
+        models_path = get_models_path()
+        if not models_path.exists():
+            return []
+        
+        downloaded = []
+        # Check for folders created by faster-whisper/huggingface-hub
+        for item in models_path.iterdir():
+            if not item.is_dir():
+                continue
+            
+            name = item.name
+            # Faster-whisper uses folders like models--Systran--faster-whisper-tiny
+            if name.startswith("models--Systran--faster-whisper-"):
+                model_id = name.replace("models--Systran--faster-whisper-", "")
+                downloaded.append(model_id)
+            elif name.startswith("models--Systran--faster-distil-whisper-"):
+                model_id = name.replace("models--Systran--faster-distil-whisper-", "distil-")
+                downloaded.append(model_id)
+            # Support folders like 'tiny', 'base' if they were manually downloaded or use old structure
+            elif any(m in name for m in ["tiny", "base", "small", "medium", "large", "distil"]):
+                # Ensure it's a valid faster-whisper model folder
+                if (item / "model.bin").exists() and (item / "config.json").exists():
+                    downloaded.append(name)
+                    
+        return list(set(downloaded))
 
     def start_recording(self):
         if self.is_recording: return
+        # Small delay to ensure focus has settled if user just clicked/switched
+        time.sleep(0.05)
         self.output_manager.save_target_window()
         self.partial_text = ""
         self.recorder.start()
@@ -185,35 +192,28 @@ class WisprLocalService:
     def _process(self, audio):
         with self._process_lock:
             try:
-                streamed_text = ""
                 self.output_manager._release_modifiers()
 
                 def on_segment(partial):
-                    nonlocal streamed_text
+                    """Update UI with partial text — but don't type anything yet."""
                     self.partial_text = partial
                     self._publish_status()
-                    delta = partial[len(streamed_text):]
-                    if delta and self.output_manager._is_target_window_focused():
-                        self.output_manager.stream_insert(delta)
-                    streamed_text = partial
 
                 text = self.transcriber.transcribe(audio, on_segment=on_segment)
                 processed = self.text_processor.process(text)
 
+                LOGGER.info("Transcription result: '%s'", processed.text)
+
                 if processed.text:
-                    self.output_manager.copy_to_clipboard(processed.text)
-                    if streamed_text:
-                        if processed.text != streamed_text:
-                            self.output_manager.replace_previous_and_type(
-                                streamed_text, processed.text,
-                            )
-                    elif processed.is_correction and self.last_typed_text:
+                    if processed.is_correction and self.last_typed_text:
                         self.output_manager.replace_previous_and_type(
                             self.last_typed_text, processed.text,
                         )
                     else:
                         self.output_manager.type_text(processed.text)
                     self.last_typed_text = processed.text
+            except Exception as e:
+                LOGGER.exception("Error during audio processing: %s", e)
             finally:
                 self.partial_text = ""
                 self.is_processing = False
@@ -246,14 +246,7 @@ class WisprLocalService:
             self._start_listener()
 
         if model_changed:
-            self.model_loading = True
-            self.model_loading_name = new_model or ""
-            self.model_loading_error = None
-            threading.Thread(
-                target=self._load_model_async,
-                args=(merged["transcription"],),
-                daemon=True,
-            ).start()
+            self.transcriber.update_settings(merged["transcription"])
         else:
             self.transcriber.update_settings(merged["transcription"])
             if self.transcriber.load_step == "error":
@@ -261,17 +254,4 @@ class WisprLocalService:
             else:
                 self.model_loading_error = None
 
-    def _load_model_async(self, transcription_settings: dict):
-        try:
-            self.transcriber.update_settings(transcription_settings)
-            if self.transcriber.load_step == "error":
-                self.model_loading_error = self.transcriber.load_error or "Failed to load model"
-                LOGGER.error("Failed to load model %s: %s", self.model_loading_name, self.model_loading_error)
-            else:
-                self.model_loading_error = None
-                LOGGER.info("Model %s loaded successfully", self.model_loading_name)
-        except Exception as e:
-            LOGGER.exception("Failed to load model %s", self.model_loading_name)
-            self.model_loading_error = str(e)
-        finally:
-            self.model_loading = False
+

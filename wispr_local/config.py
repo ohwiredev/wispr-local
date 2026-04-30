@@ -19,7 +19,7 @@ class SettingsManager:
                 "repo_id": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
                 "model_filename": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
             },
-            "output": {"method": "paste"},
+            "output": {"method": "type"},
         }
 
     def load(self) -> Dict[str, Any]:

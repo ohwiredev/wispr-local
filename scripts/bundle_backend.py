@@ -65,9 +65,22 @@ def bundle():
         print(f"PyInstaller failed with exit code {e.returncode}")
         sys.exit(1)
     
-    print("\nBundling complete!")
-    print(f"Output directory: {root_dir / 'dist' / 'wispr-backend'}")
-    print("Next step: Move this folder to 'src-tauri/resources' and update tauri.conf.json")
+    # --- Copy output to src-tauri/resources for Tauri bundling ---
+    print("\nCopying backend to src-tauri/resources...")
+
+    pyinstaller_out = root_dir / "dist" / "wispr-backend"
+    resources_dir = root_dir / "src-tauri" / "resources" / "wispr-backend"
+
+    # Clean previous output
+    if resources_dir.exists():
+        shutil.rmtree(resources_dir)
+
+    # Copy the entire onedir folder (exe + _internal/ with all deps & CUDA DLLs)
+    shutil.copytree(pyinstaller_out, resources_dir)
+
+    print(f"\nBackend ready at: {resources_dir}")
+    print(f"Contents: wispr-backend.exe + _internal/")
+    print("\nBundling complete! You can now run 'npm run tauri build'.")
 
 if __name__ == "__main__":
     bundle()

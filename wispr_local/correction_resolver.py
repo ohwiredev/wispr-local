@@ -205,7 +205,15 @@ class CorrectionResolver:
             self._load_model()
 
     def _load_model(self):
-        from llama_cpp import Llama
+        try:
+            from llama_cpp import Llama
+        except (ImportError, FileNotFoundError, OSError) as e:
+            LOGGER.warning(
+                "llama_cpp is not available (native library missing?), "
+                "correction will use rule-based mode only: %s", e,
+            )
+            self._llm = None
+            return
 
         with self._lock:
             try:

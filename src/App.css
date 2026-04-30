@@ -225,6 +225,11 @@ html.indicator-window #root {
   color: #92400e;
 }
 
+.hero__badge--initializing {
+  background: #eff6ff;
+  color: #1e40af;
+}
+
 /* ── Keyboard badge ── */
 .kbd {
   display: inline-block;
@@ -260,6 +265,10 @@ html.indicator-window #root {
   animation: pulse-dot 1.4s infinite;
 }
 .live-dot--processing { background: var(--processing-color); }
+.live-dot--initializing { 
+  background: var(--accent-color); 
+  animation: pulse-dot 1.4s infinite;
+}
 
 /* ── Live badge (transcription header) ── */
 .live-badge {
@@ -335,6 +344,22 @@ html.indicator-window #root {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.model-loading-banner__message-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-loading-banner__main-text {
+  font-weight: 600;
+}
+
+.model-loading-banner__meta-text {
+  font-size: 11px;
+  opacity: 0.8;
+  font-variant-numeric: tabular-nums;
 }
 
 .model-loading-banner__bar {
@@ -683,7 +708,8 @@ html.indicator-window #root {
   right: 0;
   top: calc(100% + 4px);
   z-index: 50;
-  min-width: 100%;
+  min-width: 220px;
+  width: max-content;
   max-height: 260px;
   overflow-y: auto;
   margin: 0;
@@ -706,6 +732,43 @@ html.indicator-window #root {
   color: var(--text-primary);
   cursor: pointer;
   transition: background 0.1s;
+}
+
+.dropdown__item-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+}
+
+.dropdown__item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dropdown__item-label {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.dropdown__item-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: var(--success-color);
+  color: #fff;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.dropdown__item-size {
+  font-size: 11px;
+  color: var(--text-secondary);
+  opacity: 0.8;
 }
 
 .dropdown__item:hover {

@@ -64,7 +64,7 @@ def get_capabilities() -> Dict[str, Any]:
     }
 
 
-def install_gpu_pack() -> Dict[str, Any]:
+def install_gpu_pack(on_output=None) -> Dict[str, Any]:
     """Run pip install for GPU pack. Caller must restart the process to load new libs."""
     argv = _pip_install_argv()
     if argv is None:
@@ -74,28 +74,40 @@ def install_gpu_pack() -> Dict[str, Any]:
         }
     if not nvidia_smi_on_path():
         LOGGER.warning("nvidia-smi not found; GPU pack install may still be requested")
+    
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=900,
-            check=False,
+            bufsize=1,
         )
+        
+        stdout_tail = []
+        for line in proc.stdout:
+            if on_output:
+                on_output(line.strip())
+            stdout_tail.append(line)
+            if len(stdout_tail) > 100:
+                stdout_tail.pop(0)
+                
+        proc.wait(timeout=900)
+        
     except subprocess.TimeoutExpired:
+        if 'proc' in locals():
+            proc.kill()
         return {"ok": False, "error": "pip install timed out (15 min)."}
     except OSError as e:
         return {"ok": False, "error": str(e)}
 
     if proc.returncode != 0:
-        tail_out = (proc.stdout or "")[-4000:]
-        tail_err = (proc.stderr or "")[-4000:]
-        LOGGER.error("GPU pack pip failed rc=%s\n%s\n%s", proc.returncode, tail_out, tail_err)
+        tail_out = "".join(stdout_tail)
+        LOGGER.error("GPU pack pip failed rc=%s\n%s", proc.returncode, tail_out)
         return {
             "ok": False,
             "error": f"pip exited with code {proc.returncode}. Check logs.",
             "stdout_tail": tail_out,
-            "stderr_tail": tail_err,
         }
 
     LOGGER.info("GPU pack pip install finished successfully")

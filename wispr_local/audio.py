@@ -24,6 +24,18 @@ class AudioRecorder:
         self.stream = None
         self._frames = []
 
+    def start(self):
+        """Start capturing audio frames."""
+        self._frames = []
+        self.stream = sd.InputStream(
+            device=self.device,
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            callback=self._callback,
+        )
+        self.stream.start()
+        LOGGER.info("Recording started (device=%s, rate=%d)", self.device, self.sample_rate)
+
 
     def stop(self):
         if self.stream:

@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { WISPR_API_URL } from '../apiConfig';
 
 export interface WisprSettings {
     hotkey: { hold_key: string };
@@ -18,8 +17,6 @@ export interface WisprCapabilities {
     gpu_pack_user_hint: string | null;
 }
 
-const ERROR_GIVE_UP_MS = 2 * 60 * 1000;
-
 interface Status {
     is_recording: boolean;
     is_processing: boolean;
@@ -32,6 +29,7 @@ interface Status {
     model_download_current: number;
     model_download_total: number;
     cuda_available: boolean;
+    downloaded_models: string[];
 }
 
 const DEFAULT_STATUS: Status = {
@@ -46,12 +44,11 @@ const DEFAULT_STATUS: Status = {
     model_download_current: 0,
     model_download_total: 0,
     cuda_available: false,
+    downloaded_models: [],
 };
 
 export const useWispr = () => {
     const [status, setStatus] = useState<Status>(DEFAULT_STATUS);
-    const [apiOk, setApiOk] = useState(true);
-    const [gaveUp, setGaveUp] = useState(false);
     const [settings, setSettings] = useState<WisprSettings | null>(null);
     const [transcriptionModels, setTranscriptionModels] = useState<string[]>([]);
     const [settingsSaving, setSettingsSaving] = useState(false);
@@ -61,101 +58,27 @@ export const useWispr = () => {
     const [gpuPackMessage, setGpuPackMessage] = useState<string | null>(null);
     const [gpuPackError, setGpuPackError] = useState<string | null>(null);
 
-    const esRef = useRef<EventSource | null>(null);
-    const firstFailureAtRef = useRef<number | null>(null);
-    const retryTimerRef = useRef<number | null>(null);
-
-    const apiOkRef = useRef(apiOk);
-    apiOkRef.current = apiOk;
-    const gaveUpRef = useRef(gaveUp);
-    gaveUpRef.current = gaveUp;
-
-    const connectSSE = useCallback(() => {
-        if (esRef.current) {
-            esRef.current.close();
-            esRef.current = null;
-        }
-        if (retryTimerRef.current !== null) {
-            window.clearTimeout(retryTimerRef.current);
-            retryTimerRef.current = null;
-        }
-
-        const es = new EventSource(`${WISPR_API_URL}/events`);
-        esRef.current = es;
-
-        es.onmessage = (e) => {
-            try {
-                const raw = JSON.parse(e.data) as Partial<Status> & { type?: string };
-                const data: Status = {
-                    ...DEFAULT_STATUS,
-                    ...raw,
-                    cuda_available: raw.cuda_available ?? false,
-                };
-                setStatus(data);
-                if (!apiOkRef.current) setApiOk(true);
-                if (gaveUpRef.current) setGaveUp(false);
-                firstFailureAtRef.current = null;
-            } catch {
-                // ignore malformed messages
-            }
-        };
-
-        es.onopen = () => {
-            if (!apiOkRef.current) setApiOk(true);
-            if (gaveUpRef.current) setGaveUp(false);
-            firstFailureAtRef.current = null;
-        };
-
-        es.onerror = () => {
-            es.close();
-            esRef.current = null;
-            if (apiOkRef.current) setApiOk(false);
-
-            const now = Date.now();
-            if (firstFailureAtRef.current === null) {
-                firstFailureAtRef.current = now;
-            }
-            if (now - firstFailureAtRef.current >= ERROR_GIVE_UP_MS) {
-                setGaveUp(true);
-                return;
-            }
-            retryTimerRef.current = window.setTimeout(() => {
-                connectSSE();
-            }, 2000);
-        };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    useEffect(() => {
-        connectSSE();
-        return () => {
-            if (esRef.current) {
-                esRef.current.close();
-                esRef.current = null;
-            }
-            if (retryTimerRef.current !== null) {
-                window.clearTimeout(retryTimerRef.current);
-            }
-        };
-    }, [connectSSE]);
-
     const refreshConfiguration = useCallback(async () => {
         setSettingsError(null);
         try {
-            const [sRes, mRes, cRes] = await Promise.all([
-                fetch(`${WISPR_API_URL}/settings`),
-                fetch(`${WISPR_API_URL}/transcription/models`),
-                fetch(`${WISPR_API_URL}/system/capabilities`),
+            const [sRes, mRes, cRes, stRes] = await Promise.all([
+                invoke('get_settings').catch(() => null),
+                invoke('get_transcription_models').catch(() => []),
+                invoke('get_capabilities').catch(() => null),
+                invoke('get_status').catch(() => null),
             ]);
-            if (sRes.ok) {
-                setSettings((await sRes.json()) as WisprSettings);
+            
+            if (sRes) {
+                setSettings(sRes as WisprSettings);
             }
-            if (mRes.ok) {
-                const body = (await mRes.json()) as { models?: string[] };
-                setTranscriptionModels(body.models ?? []);
+            if (mRes) {
+                setTranscriptionModels(mRes as string[]);
             }
-            if (cRes.ok) {
-                setCapabilities((await cRes.json()) as WisprCapabilities);
+            if (cRes) {
+                setCapabilities(cRes as WisprCapabilities);
+            }
+            if (stRes) {
+                setStatus(prev => ({ ...prev, ...(stRes as Status) }));
             }
         } catch (e) {
             console.error("Failed to load settings", e);
@@ -164,18 +87,21 @@ export const useWispr = () => {
     }, []);
 
     useEffect(() => {
-        if (apiOk && !gaveUp) {
-            void refreshConfiguration();
-        }
-    }, [apiOk, gaveUp, refreshConfiguration]);
+        void refreshConfiguration();
+    }, [refreshConfiguration]);
 
     useEffect(() => {
-        if (!settings || transcriptionModels.length === 0) return;
-        invoke('update_tray_models', {
-            models: transcriptionModels,
-            currentModel: settings.transcription.model,
-        }).catch((e) => console.warn('Failed to update tray models', e));
-    }, [settings, transcriptionModels]);
+        const unlisten = listen('wispr-status-update', (event) => {
+            const raw = event.payload as Partial<Status>;
+            setStatus(prev => ({
+                ...prev,
+                ...raw,
+                cuda_available: raw.cuda_available ?? false,
+            }));
+        });
+        
+        return () => { void unlisten.then((fn) => fn()); };
+    }, []);
 
     useEffect(() => {
         const unlisten = listen('tray-model-changed', () => {
@@ -184,33 +110,16 @@ export const useWispr = () => {
         return () => { void unlisten.then((fn) => fn()); };
     }, [refreshConfiguration]);
 
-    const retryConnection = useCallback(() => {
-        firstFailureAtRef.current = null;
-        setGaveUp(false);
-        connectSSE();
-    }, [connectSSE]);
-
     const saveSettingsPatch = async (patch: Partial<WisprSettings>): Promise<boolean> => {
         setSettingsSaving(true);
         setSettingsError(null);
         try {
-            const res = await fetch(`${WISPR_API_URL}/settings`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(patch),
-            });
-            const detail = !res.ok
-                ? ((await res.json().catch(() => ({}))) as { detail?: string }).detail ?? res.statusText
-                : null;
-            if (!res.ok) {
-                setSettingsError(typeof detail === "string" ? detail : "Failed to save settings");
-                return false;
-            }
+            await invoke('save_settings', { patch });
             await refreshConfiguration();
             return true;
         } catch (e) {
             console.error(e);
-            setSettingsError("Failed to save settings");
+            setSettingsError(typeof e === "string" ? e : "Failed to save settings");
             return false;
         } finally {
             setSettingsSaving(false);
@@ -238,18 +147,15 @@ export const useWispr = () => {
         });
     };
 
-    const startRecording = () => fetch(`${WISPR_API_URL}/start`, { method: 'POST' });
-    const stopRecording = () => fetch(`${WISPR_API_URL}/stop`, { method: 'POST' });
+    const startRecording = () => invoke('start_recording').catch(console.error);
+    const stopRecording = () => invoke('stop_recording').catch(console.error);
 
     const installGpuPack = useCallback(async (): Promise<boolean> => {
         setGpuPackInstalling(true);
         setGpuPackError(null);
         setGpuPackMessage(null);
         try {
-            const res = await fetch(`${WISPR_API_URL}/system/gpu-pack/install`, {
-                method: "POST",
-            });
-            const body = (await res.json().catch(() => ({}))) as {
+            const body = (await invoke('install_gpu_pack').catch((e) => ({error: String(e)}))) as {
                 ok?: boolean;
                 error?: string;
                 message?: string;
@@ -274,9 +180,9 @@ export const useWispr = () => {
 
     return {
         status,
-        apiOk,
-        gaveUp,
-        retryConnection,
+        apiOk: true, // Legacy compat, always true now
+        gaveUp: false,
+        retryConnection: () => {},
         settings,
         transcriptionModels,
         settingsSaving,
